@@ -8,8 +8,6 @@ const DEF_DELAY = 100;
 const DEF_ATTEMPTS = 3;
 
 (async function () {
-	const businessPartnersInvalidAddresses = [];
-
 	try {
 		await mongoose.connect(config.mongodb_uri, { useNewUrlParser: true, useUnifiedTopology: true });
 	} catch (e) {
@@ -27,53 +25,121 @@ const DEF_ATTEMPTS = 3;
 		},
 	});
 
-	const businessPartnerCursor = BusinessPartner.find({}).cursor();
+	const bpCursor = BusinessPartner.find({}).cursor();
+	validateModel(
+		client,
+		bpCursor,
+		(doc) => {
+			const { id, firstName, lastName, address1, city, state, postalCode } = doc;
+			return {
+				id: id,
+				firstName,
+				lastName,
+				address_street: address1,
+				address_city: city,
+				address_subdivision: state,
+				address_country_code: 'US',
+				address_postal_code: postalCode,
+			};
+		},
+		(collection) => {
+			console.log(`Business Partners With Invalid Addresses: ${collection.length}`);
+		}
+	);
 
+	validateModel(
+		client,
+		bpCursor,
+		(doc) => {
+			const { id, firstName, lastName, controller } = doc;
+			const { address } = controller;
+			const { address1, city, stateProvinceRegion, postalCode } = address;
+			return {
+				id: id,
+				firstName,
+				lastName,
+				address_street: address1,
+				address_city: city,
+				address_subdivision: stateProvinceRegion,
+				address_country_code: 'US',
+				address_postal_code: postalCode,
+			};
+		},
+		(collection) => {
+			console.log(`Business Partners With Invalid Addresses: ${collection.length}`);
+		}
+	);
+
+	const custCursor = Customer.find({}).cursor();
+	validateModel(
+		client,
+		custCursor,
+		(doc) => {
+			const { id, firstName, lastName, address1, city, state, postalCode } = doc;
+			return {
+				id,
+				firstName,
+				lastName,
+				address_street: address1,
+				address_city: city,
+				address_subdivision: state,
+				address_country_code: 'US',
+				address_postal_code: postalCode,
+			};
+		},
+		(collection) => {
+			console.log(`Customers With Invalid Addresses: ${collection.length}`);
+		}
+	);
+})();
+
+function validateModel(client, cursor, extract, eof) {
+	const collection = [];
 	let delay = DEF_DELAY;
 	let enumTimerId = setTimeout(function nextDoc() {
-		businessPartnerCursor
+		cursor
 			.next()
 			.then((doc) => {
 				clearTimeout(enumTimerId);
-				const { _id, firstName, lastName, address1, city, state, postalCode, controller } = doc;
-				// const { address } = controller;
-				// const {
-				// 	address1: _address1,
-				// 	address2: _address2,
-				// 	city: _city,
-				// 	stateProvinceRegion: _stateProvinceRegion,
-				// 	country: _country,
-				// 	postalCode: _postalCode,
-				// } = address;
+				const {
+					id,
+					firstName,
+					lastName,
+					address_street,
+					address_city,
+					address_subdivision,
+					address_country_code,
+					address_postal_code,
+				} = extract(doc);
 
-				let attempts = 1;
+				let attempts = 0;
 				let verifyTimerId = setTimeout(function verifyAdd() {
 					client
 						.post('address-verification', {
-							address_street: address1,
-							address_city: city,
-							address_subdivision: state,
-							address_country_code: 'US',
-							address_postal_code: postalCode,
+							address_street,
+							address_city,
+							address_subdivision,
+							address_country_code,
+							address_postal_code,
 						})
 						.then((result) => {
 							clearTimeout(verifyTimerId);
 							const { deliverability } = result.data;
 							if (deliverability !== 'usps_deliverable') {
-								businessPartnersInvalidAddresses.push({ _id, firstName, lastName });
+								collection.push({ id, firstName, lastName });
 							}
-							console.log(`${firstName} ${lastName} ${deliverability}`);
+							console.log(`${firstName} ${lastName} => ${deliverability}`);
 							delay = DEF_DELAY;
 							enumTimerId = setTimeout(nextDoc, delay);
 						})
 						.catch((e) => {
-							businessPartnersInvalidAddresses.push({ _id, firstName, lastName });
-							console.log(`Address Verification Error: ${e.message} = ${firstName} ${lastName}`);
 							if (attempts < DEF_ATTEMPTS) {
+								console.log(`${firstName} ${lastName} => ${e.message}`);
 								attempts++;
 								delay *= 2;
 								verifyTimerId = setTimeout(verifyAdd, delay);
 							} else {
+								collection.push({ id, firstName, lastName });
 								clearTimeout(verifyTimerId);
 								delay = DEF_DELAY;
 								enumTimerId = setTimeout(nextDoc, delay);
@@ -82,10 +148,9 @@ const DEF_ATTEMPTS = 3;
 				}, delay);
 			})
 			.catch((e) => {
-				console.log(`Cursor Enumeration Error: ${e.message}`);
 				if (e.driver) {
 					clearTimeout(enumTimerId);
-					console.log(`Business Partners With Invalid Addresses: ${businessPartnersInvalidAddresses.length}`);
+					eof(collection);
 					process.exit(0);
 				} else {
 					delay = DEF_DELAY;
@@ -93,4 +158,4 @@ const DEF_ATTEMPTS = 3;
 				}
 			});
 	}, delay);
-})();
+}
