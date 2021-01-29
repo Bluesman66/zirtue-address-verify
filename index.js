@@ -4,7 +4,8 @@ const axios = require('axios');
 const BusinessPartner = require('./models/business_partner');
 const Customer = require('./models/customer');
 
-const DEF_DELAY = 1000;
+const DEF_DELAY = 100;
+const DEF_ATTEMPTS = 3;
 
 (async function () {
 	const businessPartnersInvalidAddresses = [];
@@ -29,11 +30,11 @@ const DEF_DELAY = 1000;
 	const businessPartnerCursor = BusinessPartner.find({}).cursor();
 
 	let delay = DEF_DELAY;
-	let timerId = setTimeout(function request() {
+	let enumTimerId = setTimeout(function nextDoc() {
 		businessPartnerCursor
 			.next()
 			.then((doc) => {
-				delay = DEF_DELAY;
+				clearTimeout(enumTimerId);
 				const { _id, firstName, lastName, address1, city, state, postalCode, controller } = doc;
 				// const { address } = controller;
 				// const {
@@ -45,36 +46,51 @@ const DEF_DELAY = 1000;
 				// 	postalCode: _postalCode,
 				// } = address;
 
-				client
-					.post('address-verification', {
-						address_street: address1,
-						address_city: city,
-						address_subdivision: state,
-						address_country_code: 'US',
-						address_postal_code: postalCode,
-					})
-					.then((result) => {
-						delay = DEF_DELAY;
-						const { deliverability } = result.data;
-						if (deliverability !== 'usps_deliverable') {
+				let attempts = 1;
+				let verifyTimerId = setTimeout(function verifyAdd() {
+					client
+						.post('address-verification', {
+							address_street: address1,
+							address_city: city,
+							address_subdivision: state,
+							address_country_code: 'US',
+							address_postal_code: postalCode,
+						})
+						.then((result) => {
+							clearTimeout(verifyTimerId);
+							const { deliverability } = result.data;
+							if (deliverability !== 'usps_deliverable') {
+								businessPartnersInvalidAddresses.push({ _id, firstName, lastName });
+							}
+							console.log(`${firstName} ${lastName} ${deliverability}`);
+							delay = DEF_DELAY;
+							enumTimerId = setTimeout(nextDoc, delay);
+						})
+						.catch((e) => {
 							businessPartnersInvalidAddresses.push({ _id, firstName, lastName });
-						}
-						console.log(`${firstName} ${lastName} ${deliverability}`);
-					})
-					.catch((e) => {
-						delay *= 2;
-						console.log(`Address Verification Error: ${e.message} = ${firstName} ${lastName}`);
-					});
+							console.log(`Address Verification Error: ${e.message} = ${firstName} ${lastName}`);
+							if (attempts < DEF_ATTEMPTS) {
+								attempts++;
+								delay *= 2;
+								verifyTimerId = setTimeout(verifyAdd, delay);
+							} else {
+								clearTimeout(verifyTimerId);
+								delay = DEF_DELAY;
+								enumTimerId = setTimeout(nextDoc, delay);
+							}
+						});
+				}, delay);
 			})
 			.catch((e) => {
-				delay *= 2;
 				console.log(`Cursor Enumeration Error: ${e.message}`);
 				if (e.driver) {
-					clearTimeout(timerId);
+					clearTimeout(enumTimerId);
 					console.log(`Business Partners With Invalid Addresses: ${businessPartnersInvalidAddresses.length}`);
+					process.exit(0);
+				} else {
+					delay = DEF_DELAY;
+					enumTimerId = setTimeout(nextDoc, delay);
 				}
 			});
-
-		timerId = setTimeout(request, delay);
 	}, delay);
 })();
